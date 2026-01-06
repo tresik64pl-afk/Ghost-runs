@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Ghost Hunter: Maze Fix</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; user-select: none; touch-action: none; color: white; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        #main-menu {
+            position: absolute; width: 100%; height: 100%; background: #080808;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 200;
+        }
+        .menu-box { background: #1a1a1a; padding: 35px; border-radius: 20px; border: 2px solid #333; text-align: center; }
+        select { padding: 12px; border-radius: 8px; background: #222; color: white; border: 1px solid #444; margin: 10px; width: 220px; }
+        .start-btn { padding: 15px 50px; background: #27ae60; border: none; border-radius: 10px; color: white; font-size: 20px; font-weight: bold; cursor: pointer; }
+
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; transform: translate(-50%, -50%); pointer-events: none; z-index: 50; }
+        #crosshair::before { content: ''; position: absolute; top: 9px; left: 0; width: 20px; height: 2px; background: rgba(255,255,255,0.6); }
+        #crosshair::after { content: ''; position: absolute; left: 9px; top: 0; width: 2px; height: 20px; background: rgba(255,255,255,0.6); }
+
+        .ui-panel {
+            position: absolute; top: 20px; left: 20px; z-index: 20;
+            background: rgba(0,0,0,0.85); padding: 15px; border-radius: 12px; border: 1px solid #444;
+        }
+        .ui-row { font-size: 13px; color: #f1c40f; margin-top: 4px; font-weight: bold; }
+        #hp-display { font-size: 26px; margin-bottom: 5px; }
+
+        #weapon-view { position: absolute; bottom: 0; right: 10%; width: 200px; height: 200px; font-size: 110px; display: flex; align-items: flex-end; justify-content: center; pointer-events: none; }
+        #joy-container { position: absolute; bottom: 40px; left: 40px; width: 140px; height: 140px; background: rgba(255,255,255,0.05); border-radius: 50%; border: 1px solid #444; }
+        #joy-stick { position: absolute; top: 45px; left: 45px; width: 50px; height: 50px; background: rgba(255,255,255,0.2); border-radius: 50%; }
+        
+        .ui-btns { position: absolute; bottom: 40px; right: 40px; display: flex; flex-direction: column; gap: 15px; }
+        .ctrl-btn { padding: 15px; border-radius: 12px; border: none; background: #333; color: white; font-weight: bold; }
+        #attack-btn { width: 100px; height: 100px; border-radius: 50%; background: #c0392b; border: 4px solid white; }
+    </style>
+</head>
+<body>
+
+    <div id="main-menu">
+        <div class="menu-box">
+            <h1>GHOST HUNTER</h1>
+            <select id="map-sel">
+                <option value="maze">ЛАБИРИНТ (FIXED)</option>
+                <option value="mega">ГИГАНТСКАЯ АРЕНА</option>
+            </select><br>
+            <select id="diff-sel">
+                <option value="normal">ВЫЖИВАНИЕ</option>
+                <option value="test">ТЕСТ (БЕССМЕРТИЕ)</option>
+            </select><br>
+            <button class="start-btn" onclick="startGame()">ИГРАТЬ</button>
+        </div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div class="ui-panel">
+        <div id="hp-display">❤️❤️❤️❤️❤️</div>
+        <div id="regen-ui" class="ui-row">ХИЛЛ: 20с</div>
+        <div id="wave-ui" class="ui-row">ВОЛНА: 60с</div>
+        <div id="ghost-respawn-ui" class="ui-row" style="color:#e74c3c; display:none;">РЕПАУН: 15с</div>
+    </div>
+
+    <canvas id="game"></canvas>
+    <div id="weapon-view">👊</div>
+    <div id="joy-container"><div id="joy-stick"></div></div>
+
+    <div class="ui-btns">
+        <div style="display:flex; gap:10px;"><button class="ctrl-btn" onclick="setW('fist')">👊</button><button class="ctrl-btn" onclick="setW('gun')">🔫</button></div>
+        <button id="attack-btn" class="ctrl-btn">АТАКА</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+
+        const maps = {
+            maze: [
+                [1,1,1,1,1,1,1,1,1,1,1,1],
+                [1,0,0,0,0,0,0,0,0,0,0,1],
+                [1,0,1,1,1,0,0,1,1,1,0,1],
+                [1,0,1,0,0,0,0,0,0,1,0,1],
+                [1,0,1,0,1,1,1,1,0,1,0,1],
+                [1,0,0,0,0,0,0,0,0,0,0,1],
+                [1,1,1,1,1,1,1,1,1,1,1,1]
+            ],
+            mega: Array(30).fill().map((_, y) => Array(30).fill().map((_, x) => (x===0 || x===29 || y===0 || y===29) ? 1 : 0))
+        };
+
+        let active = false, curMap = [], diff = 'normal';
+        let player = { x: 2, y: 2, dir: 0, hp: 5, shield: false, weapon: 'fist' };
+        let ghost = { x: 8, y: 3, hp: 100, alive: true, lastAtk: 0 };
+        let minions = [], move = { f: 0, s: 0 }, joyId = null, lookId = null, lastLX = 0;
+        let timers = { regen: 20, wave: 60, respawn: 15 };
+
+        function startGame() {
+            curMap = maps[document.getElementById('map-sel').value];
+            diff = document.getElementById('diff-sel').value;
+            document.getElementById('main-menu').style.display = 'none';
+            active = true;
+            initTimerLogic();
+            frame();
+        }
+
+        function initTimerLogic() {
+            setInterval(() => {
+                if (!active) return;
+                if (!player.shield) {
+                    timers.regen--;
+                    if (timers.regen <= 0) {
+                        if (player.hp < 5) player.hp++; else player.shield = true;
+                        timers.regen = 20;
+                    }
+                }
+                document.getElementById('regen-ui').innerText = player.shield ? "ЩИТ 🛡️" : `ХИЛЛ: ${timers.regen}с`;
+                if (ghost.alive) {
+                    timers.wave--;
+                    if (timers.wave <= 0) {
+                        for(let i=0; i<3; i++) minions.push({ x: ghost.x, y: ghost.y, hp: 1, lastAtk: 0 });
+                        timers.wave = 60;
+                    }
+                }
+                document.getElementById('wave-ui').innerText = `ВОЛНА: ${timers.wave}с`;
+                if (!ghost.alive) {
+                    timers.respawn--;
+                    document.getElementById('ghost-respawn-ui').style.display = 'block';
+                    document.getElementById('ghost-respawn-ui').innerText = `РЕПАУН: ${timers.respawn}с`;
+                    if (timers.respawn <= 0) {
+                        ghost.alive = true; ghost.hp = 100; ghost.x = 8; ghost.y = 3;
+                        timers.respawn = 15; document.getElementById('ghost-respawn-ui').style.display = 'none';
+                    }
+                }
+                updateUI();
+            }, 1000);
+        }
+
+        function updateUI() {
+            let h = "❤️".repeat(player.hp);
+            if (player.shield) h += " 🛡️";
+            document.getElementById('hp-display').innerHTML = h;
+        }
+
+        function setW(t) { player.weapon = t; document.getElementById('weapon-view').innerText = t === 'fist' ? '👊' : '🔫'; }
+
+        function takeDmg() {
+            if (diff === 'test') return;
+            if (player.shield) { player.shield = false; timers.regen = 20; }
+            else { player.hp--; }
+            updateUI();
+            if (player.hp <= 0) location.reload();
+        }
+
+        // Управление (Touch)
+        window.addEventListener('touchstart', e => {
+            for(let t of e.changedTouches) {
+                if(t.clientX < 250 && t.clientY > canvas.height-250) joyId = t.identifier;
+                else if(t.clientX > canvas.width/3) { lookId = t.identifier; lastLX = t.clientX; }
+            }
+        });
+        window.addEventListener('touchmove', e => {
+            for(let t of e.changedTouches) {
+                if(t.identifier === joyId) {
+                    let dx = t.clientX - 110, dy = t.clientY - (canvas.height-110);
+                    let d = Math.sqrt(dx*dx+dy*dy);
+                    if(d>50) { dx*=50/d; dy*=50/d; }
+                    document.getElementById('joy-stick').style.transform = `translate(${dx}px,${dy}px)`;
+                    move.f = -dy/50; move.s = dx/50;
+                }
+                if(t.identifier === lookId) { player.dir += (t.clientX - lastLX)*0.008; lastLX = t.clientX; }
+            }
+        });
+        window.addEventListener('touchend', e => {
+            for(let t of e.changedTouches) {
+                if(t.identifier === joyId) { joyId = null; move.f = 0; move.s = 0; document.getElementById('joy-stick').style.transform = 'none'; }
+                if(t.identifier === lookId) lookId = null;
+            }
+        });
+
+        document.getElementById('attack-btn').onclick = () => {
+            document.getElementById('weapon-view').style.transform = "translateY(-40px)";
+            setTimeout(() => document.getElementById('weapon-view').style.transform = "none", 100);
+            const hit = (t, r, d) => {
+                let dx = t.x - player.x, dy = t.y - player.y, dist = Math.sqrt(dx*dx+dy*dy);
+                let a = Math.atan2(dy, dx) - player.dir;
+                while(a < -Math.PI) a += Math.PI*2; while(a > Math.PI) a -= Math.PI*2;
+                if(Math.abs(a) < 0.5 && dist < r) {
+                    t.hp -= d; if(t === ghost && t.hp <= 0) ghost.alive = false;
+                }
+            };
+            hit(ghost, player.weapon === 'gun' ? 12 : 2.5, 34);
+            minions.forEach(m => hit(m, 2.5, 10));
+            minions = minions.filter(m => m.hp > 0);
+        };
+
+        function frame() {
+            if(!active) return;
+            let nx = player.x + (Math.cos(player.dir)*move.f - Math.sin(player.dir)*move.s)*0.055;
+            let ny = player.y + (Math.sin(player.dir)*move.f + Math.cos(player.dir)*move.s)*0.055;
+            if(curMap[Math.floor(player.y)][Math.floor(nx)] === 0) player.x = nx;
+            if(curMap[Math.floor(ny)][Math.floor(player.x)] === 0) player.y = ny;
+
+            [ghost, ...minions].forEach(m => {
+                if(!m.alive && m === ghost) return;
+                let dx = player.x - m.x, dy = player.y - m.y, d = Math.sqrt(dx*dx+dy*dy);
+                if(d > 0.6) {
+                    let mx = m.x + (dx/d)*0.025, my = m.y + (dy/d)*0.025;
+                    if(curMap[Math.floor(m.y)][Math.floor(mx)] === 0) m.x = mx;
+                    if(curMap[Math.floor(my)][Math.floor(m.x)] === 0) m.y = my;
+                } else if(Date.now() - m.lastAtk > 1500) { takeDmg(); m.lastAtk = Date.now(); }
+            });
+
+            ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+            let zBuf = [], fov = Math.PI/3;
+            for(let i=0; i<canvas.width; i+=4) {
+                let a = (player.dir - fov/2) + (i/canvas.width)*fov;
+                let d = 0; 
+                // ВЫСОКАЯ ТОЧНОСТЬ (шаг 0.02)
+                while(d < 40) { 
+                    d += 0.02; 
+                    if(curMap[Math.floor(player.y+Math.sin(a)*d)][Math.floor(player.x+Math.cos(a)*d)] === 1) break; 
+                }
+                zBuf[i] = d;
+                let h = canvas.height / (d * 1.5 * Math.cos(a-player.dir));
+                ctx.fillStyle = `rgb(0,${Math.max(20, 120-d*3)},0)`;
+                ctx.fillRect(i, (canvas.height-h)/2, 4, h);
+            }
+
+            [ghost, ...minions].forEach(m => {
+                if(!m.alive && m === ghost) return;
+                let dx = m.x - player.x, dy = m.y - player.y, d = Math.sqrt(dx*dx+dy*dy);
+                let a = Math.atan2(dy, dx) - player.dir;
+                while(a < -Math.PI) a += Math.PI*2; while(a > Math.PI) a -= Math.PI*2;
+                let sx = (a / fov + 0.5) * canvas.width;
+                if(d < zBuf[Math.floor(sx)] + 0.5 && Math.abs(a) < 0.6) {
+                    let h = canvas.height / (d * 1.5);
+                    let wF = (m === ghost) ? 0.8 : 0.5;
+                    ctx.fillStyle = `rgba(255,255,255,${0.3 + Math.random()*0.4})`;
+                    ctx.fillRect(sx - (h*wF)/2, (canvas.height-h*(m===ghost?1:0.5))/2, h*wF, h*(m===ghost?1:0.5));
+                }
+            });
+            requestAnimationFrame(frame);
+        }
+    </script>
+</body>
+</html>
